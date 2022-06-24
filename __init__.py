@@ -19,7 +19,7 @@ bl_info = {
     "author": "Daniel Boxer",
     "description": "Automatically save and restore previous views",
     "blender": (2, 80, 0),
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "location": "View3D > Sidebar > View > ReView",
     "category": "3D View",
 }
@@ -86,7 +86,7 @@ def store_view():
             new_view = views.add()
             set_data(new_view, current_view)
 
-            if len(views) > props.save_count:
+            if len(views) > get_preferences().save_count:
                 views.remove(0)
 
     # update last view
@@ -94,7 +94,40 @@ def store_view():
 
     if not props.is_active:
         return None
-    return props.update_rate
+    return get_preferences().update_delay
+
+
+def draw_idx(layout):
+    context = bpy.context
+    props = context.scene.review_props
+    row = layout.row()
+    row.alignment = "CENTER"
+    view_idx = props.view_idx
+    view_count = len(context.scene.review_views)
+    if view_count > 0:
+        row.label(text=f"{view_idx + 1}/{view_count}")
+    else:
+        row.label(text="0/0")
+
+
+def draw_toggle(layout):
+    row = layout.row()
+    row.scale_y = 2
+    is_active = bpy.context.scene.review_props.is_active
+    if is_active:
+        row.operator("review.toggle", text="Active", icon="VIEW_CAMERA")
+    else:
+        row.operator("review.toggle", text="Inactive", icon="CAMERA_DATA")
+
+
+def draw_ops(layout):
+    layout.operator("review.switch", text="", icon="TRIA_LEFT").mode = "PREVIOUS"
+    layout.operator("review.switch", text="", icon="TRIA_RIGHT").mode = "NEXT"
+    layout.operator("review.switch", text="", icon="TIME").mode = "RECENT"
+
+
+def get_preferences():
+    return bpy.context.preferences.addons[__name__].preferences
 
 
 class REVIEW_OT_toggle(bpy.types.Operator):
@@ -106,7 +139,7 @@ class REVIEW_OT_toggle(bpy.types.Operator):
         props = context.scene.review_props
         props.is_active = not props.is_active
         if props.is_active:
-            bpy.app.timers.register(store_view, first_interval=props.update_rate)
+            bpy.app.timers.register(store_view)
             self.report({"INFO"}, "ReView activated")
         else:
             self.report({"INFO"}, "ReView deactivated")
@@ -124,8 +157,7 @@ class REVIEW_OT_switch(bpy.types.Operator):
         items=[
             ("NEXT", "0", ""),
             ("PREVIOUS", "1", ""),
-            ("FIRST", "2", ""),
-            ("LAST", "3", ""),
+            ("RECENT", "2", ""),
         ],
     )
 
@@ -141,10 +173,8 @@ class REVIEW_OT_switch(bpy.types.Operator):
             elif self.mode == "NEXT":
                 if view_idx > 0:
                     props.view_idx = view_idx - 1
-            elif self.mode == "FIRST":
-                props.view_idx = 0
             else:
-                props.view_idx = view_count - 1
+                props.view_idx = 0
 
             context = bpy.context
             props = context.scene.review_props
@@ -160,7 +190,7 @@ class REVIEW_OT_switch(bpy.types.Operator):
             region_3d.view_rotation = view[0]
             region_3d.view_location = view[1]
             region_3d.view_distance = view[2]
-            self.report({"INFO"}, f"View {view_idx + 1} restored")
+            self.report({"INFO"}, f"View {props.view_idx + 1} restored")
         else:
             self.report({"ERROR"}, "No saved views")
 
@@ -187,32 +217,12 @@ class REVIEW_PT_main(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        props = context.scene.review_props
         box = layout.box()
-
-        row = box.row()
-        row.scale_y = 2
-        is_active = context.scene.review_props.is_active
-        if is_active:
-            row.operator("review.toggle", text="Active", icon="VIEW_CAMERA")
-        else:
-            row.operator("review.toggle", text="Inactive", icon="CAMERA_DATA")
-
+        draw_toggle(box)
         row = box.row()
         row.alignment = "CENTER"
-        row.operator("review.switch", text="", icon="REW").mode = "LAST"
-        row.operator("review.switch", text="", icon="TRIA_LEFT").mode = "PREVIOUS"
-        row.operator("review.switch", text="", icon="TRIA_RIGHT").mode = "NEXT"
-        row.operator("review.switch", text="", icon="FF").mode = "FIRST"
-
-        row = box.row()
-        row.alignment = "CENTER"
-        view_idx = props.view_idx
-        view_count = len(context.scene.review_views)
-        if view_count > 0:
-            row.label(text=f"{view_idx + 1}/{view_count}")
-        else:
-            row.label(text="0/0")
+        draw_ops(row)
+        draw_idx(box)
 
 
 class REVIEW_PT_settings(bpy.types.Panel):
@@ -224,38 +234,30 @@ class REVIEW_PT_settings(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        props = context.scene.review_props
+        prefs = get_preferences()
         box = layout.box()
-
         row = box.row()
-        row.label(text="Update Rate")
-        row.prop(props, "update_rate", slider=True)
-
+        row.label(text="Update Delay")
+        row.prop(prefs, "update_delay", slider=True)
         row = box.row()
         row.label(text="Saved Views")
-        row.prop(props, "save_count", slider=True)
-
+        row.prop(prefs, "save_count", slider=True)
         box.operator("review.clear", icon="FILE_REFRESH")
 
 
+class REVIEW_MT_review_pie(bpy.types.Menu):
+    bl_label = "ReView"
+
+    def draw(self, context):
+        pie = self.layout.menu_pie()
+        draw_ops(pie)
+        box = pie.box()
+        draw_toggle(box)
+        draw_idx(box)
+
+
 class REVIEW_PG_properties(bpy.types.PropertyGroup):
-    # non UI
     is_active: bpy.props.BoolProperty()
-    # UI
-    update_rate: bpy.props.IntProperty(
-        name="",
-        description="The delay time in seconds between view checks",
-        default=10,
-        min=1,
-        max=60,
-    )
-    save_count: bpy.props.IntProperty(
-        name="",
-        description="The maximum amount of saved views",
-        default=10,
-        min=1,
-        max=20,
-    )
     view_idx: bpy.props.IntProperty()
 
 
@@ -266,14 +268,50 @@ class REVIEW_PG_view(bpy.types.PropertyGroup):
     count: bpy.props.IntProperty()
 
 
+class REVIEW_AP_preferences(bpy.types.AddonPreferences):
+    bl_idname = __name__
+
+    update_delay: bpy.props.IntProperty(
+        name="",
+        description="The delay time in seconds between view checks",
+        default=2,
+        min=1,
+        max=30,
+    )
+    save_count: bpy.props.IntProperty(
+        name="",
+        description="The maximum amount of saved views",
+        default=10,
+        min=1,
+        max=20,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        row = box.row()
+        row.alignment = "CENTER"
+        row.label(text="Keymap", icon="EVENT_OS")
+        user_keymaps = context.window_manager.keyconfigs.user.keymaps["3D View"]
+        keymap_items = user_keymaps.keymap_items
+        layout.context_pointer_set("keymap", user_keymaps)
+        row = box.row()
+        keymap_item = keymap_items["wm.call_menu_pie"]
+        row.prop(keymap_item, "active", text="", full_event=True)
+        row.prop(keymap_item, "type", text=keymap_item.name, full_event=True)
+
+
+keymaps = []
 classes = (
     REVIEW_OT_toggle,
     REVIEW_OT_switch,
     REVIEW_OT_clear,
     REVIEW_PT_main,
     REVIEW_PT_settings,
+    REVIEW_MT_review_pie,
     REVIEW_PG_properties,
     REVIEW_PG_view,
+    REVIEW_AP_preferences,
 )
 
 
@@ -283,9 +321,20 @@ def register():
     bpy.types.Scene.review_props = bpy.props.PointerProperty(type=REVIEW_PG_properties)
     bpy.types.Scene.review_views = bpy.props.CollectionProperty(type=REVIEW_PG_view)
     bpy.types.Scene.review_last = bpy.props.CollectionProperty(type=REVIEW_PG_view)
+    key_config = bpy.context.window_manager.keyconfigs.addon
+    if key_config:
+        keymap = key_config.keymaps.new("3D View", space_type="VIEW_3D")
+        keymap_item = keymap.keymap_items.new(
+            "wm.call_menu_pie", type="V", value="PRESS", shift=True, ctrl=True
+        )
+        keymap_item.properties.name = "REVIEW_MT_review_pie"
+        keymaps.append((keymap, keymap_item))
 
 
 def unregister():
+    for keymap, keymap_item in keymaps:
+        keymap.keymap_items.remove(keymap_item)
+    keymaps.clear()
     del bpy.types.Scene.review_last
     del bpy.types.Scene.review_views
     del bpy.types.Scene.review_props
