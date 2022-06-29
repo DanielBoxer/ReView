@@ -19,13 +19,17 @@ bl_info = {
     "author": "Daniel Boxer",
     "description": "Automatically save and restore previous views",
     "blender": (2, 80, 0),
-    "version": (0, 2, 0),
+    "version": (1, 0, 0),
     "location": "View3D > Sidebar > View > ReView",
     "category": "3D View",
+    "doc_url": "https://github.com/DanielBoxer/ReView#readme",
+    "tracker_url": "https://github.com/DanielBoxer/ReView/issues",
 }
 
 import bpy
 import mathutils
+
+_is_active = False
 
 
 def get_data(view):
@@ -43,36 +47,59 @@ def set_data(view, view_data):
 
 
 def convert_data(view_data):
-    quat_string = view_data[0].split(" ")
+    quat_string = view_data[0].split()
     quat_string = [float(num) for num in quat_string]
     view_data[0] = mathutils.Quaternion(quat_string)
     view_data[1] = mathutils.Vector(view_data[1])
     return view_data
 
 
-def store_view():
-    context = bpy.context
-    props = context.scene.review_props
-
-    view = [area for area in context.screen.areas if area.type == "VIEW_3D"][0]
+def get_current_view():
+    view = [area for area in bpy.context.screen.areas if area.type == "VIEW_3D"][0]
     region3d = view.spaces[0].region_3d
+    return get_data(region3d)
 
-    current_view = get_data(region3d)
-    views = context.scene.review_views
-    last_view = context.scene.review_last
+
+def add_view(view, target, is_named=False):
+    new_view = target.add()
+    if is_named:
+        # give new view a unique name for easy collection searching
+        saved_views = bpy.context.scene.review_saved
+        if len(saved_views) > 1:
+            # skip last element because the name is currently empty
+            saved_views = [int(num.name) for num in saved_views[:-1]]
+            new_view.name = str(max(saved_views) + 1)
+        else:
+            new_view.name = "0"
+    set_data(new_view, view)
+
+
+def restore_view(view_data):
+    region_3d = bpy.context.space_data.region_3d
+    view = convert_data(view_data)
+    region_3d.view_rotation = view[0]
+    region_3d.view_location = view[1]
+    region_3d.view_distance = view[2]
+
+
+def get_selected():
+    return [view for view in bpy.context.scene.review_saved if view.is_selected]
+
+
+def store_view():
+    current_view = get_current_view()
+    views = bpy.context.scene.review_recent
+    last_view = bpy.context.scene.review_last
     last_view_data = None
     last_view_data_copy = None
-
     if not last_view:
         # save last view if it's the first iteration
-        new_view = last_view.add()
-        set_data(new_view, current_view)
+        add_view(current_view, last_view)
     else:
         # get last view
         last_view_data = get_data(last_view[0])
         last_view_data_copy = last_view_data.copy()
         last_view_data = convert_data(last_view_data)
-
     if current_view == last_view_data:
         match = False
         # if the view is already saved, don't save it
@@ -83,47 +110,14 @@ def store_view():
                 break
         if not match:
             # if the user has stayed on a view for two iterations, save it
-            new_view = views.add()
-            set_data(new_view, current_view)
-
+            add_view(current_view, views)
             if len(views) > get_preferences().save_count:
                 views.remove(0)
-
     # update last view
     set_data(last_view[0], current_view)
-
-    if not props.is_active:
+    if not _is_active:
         return None
     return get_preferences().update_delay
-
-
-def draw_idx(layout):
-    context = bpy.context
-    props = context.scene.review_props
-    row = layout.row()
-    row.alignment = "CENTER"
-    view_idx = props.view_idx
-    view_count = len(context.scene.review_views)
-    if view_count > 0:
-        row.label(text=f"{view_idx + 1}/{view_count}")
-    else:
-        row.label(text="0/0")
-
-
-def draw_toggle(layout):
-    row = layout.row()
-    row.scale_y = 2
-    is_active = bpy.context.scene.review_props.is_active
-    if is_active:
-        row.operator("review.toggle", text="Active", icon="VIEW_CAMERA")
-    else:
-        row.operator("review.toggle", text="Inactive", icon="CAMERA_DATA")
-
-
-def draw_ops(layout):
-    layout.operator("review.switch", text="", icon="TRIA_LEFT").mode = "PREVIOUS"
-    layout.operator("review.switch", text="", icon="TRIA_RIGHT").mode = "NEXT"
-    layout.operator("review.switch", text="", icon="TIME").mode = "RECENT"
 
 
 def get_preferences():
@@ -136,9 +130,9 @@ class REVIEW_OT_toggle(bpy.types.Operator):
     bl_description = "Toggle ReView"
 
     def execute(self, context):
-        props = context.scene.review_props
-        props.is_active = not props.is_active
-        if props.is_active:
+        global _is_active
+        _is_active = not _is_active
+        if _is_active:
             bpy.app.timers.register(store_view)
             self.report({"INFO"}, "ReView activated")
         else:
@@ -152,20 +146,13 @@ class REVIEW_OT_switch(bpy.types.Operator):
     bl_description = "Switch"
 
     mode: bpy.props.EnumProperty(
-        name="",
-        description="",
-        items=[
-            ("NEXT", "0", ""),
-            ("PREVIOUS", "1", ""),
-            ("RECENT", "2", ""),
-        ],
+        items=[("NEXT", "0", ""), ("PREVIOUS", "1", ""), ("RECENT", "2", "")]
     )
 
     def execute(self, context):
         props = context.scene.review_props
         view_idx = props.view_idx
-
-        view_count = len(context.scene.review_views)
+        view_count = len(context.scene.review_recent)
         if view_count > 0:
             if self.mode == "PREVIOUS":
                 if view_idx < view_count - 1:
@@ -175,37 +162,92 @@ class REVIEW_OT_switch(bpy.types.Operator):
                     props.view_idx = view_idx - 1
             else:
                 props.view_idx = 0
-
-            context = bpy.context
-            props = context.scene.review_props
-            region_3d = context.space_data.region_3d
-            views = context.scene.review_views
+            views = context.scene.review_recent
             # show most recent first
-            recent_views = []
-            for view in reversed(views):
-                recent_views.append(view)
+            recent_views = list(reversed(views))
             view = get_data(recent_views[props.view_idx])
-            view = convert_data(view)
-            # restore saved view
-            region_3d.view_rotation = view[0]
-            region_3d.view_location = view[1]
-            region_3d.view_distance = view[2]
+            restore_view(view)
             self.report({"INFO"}, f"View {props.view_idx + 1} restored")
         else:
             self.report({"ERROR"}, "No saved views")
-
         return {"FINISHED"}
 
 
 class REVIEW_OT_clear(bpy.types.Operator):
     bl_idname = "review.clear"
     bl_label = "Clear Views"
-    bl_description = "Clear all saved views"
+    bl_description = "Clear all views"
+
+    mode: bpy.props.EnumProperty(items=[("RECENT", "0", ""), ("SAVED", "1", "")])
 
     def execute(self, context):
-        context.scene.review_views.clear()
+        if self.mode == "RECENT":
+            context.scene.review_recent.clear()
+            self.report({"INFO"}, "Recent views cleared")
+        else:
+            context.scene.review_saved.clear()
+            self.report({"INFO"}, "Saved views cleared")
         context.scene.review_props.view_idx = 0
-        self.report({"INFO"}, "Views cleared")
+        return {"FINISHED"}
+
+
+class REVIEW_OT_save(bpy.types.Operator):
+    bl_idname = "review.save"
+    bl_label = "Save"
+    bl_description = (
+        "Save current view."
+        " If no view is selected, a new view will be saved."
+        " If a view is selected, it will be overwritten."
+    )
+
+    def execute(self, context):
+        current_view = get_current_view()
+        selected = get_selected()
+        if len(selected) > 0:
+            for view in selected:
+                set_data(view, current_view)
+                self.report({"INFO"}, f"View '{view.view_name}' saved")
+        else:
+            add_view(current_view, context.scene.review_saved, is_named=True)
+            self.report({"INFO"}, "New view saved")
+        return {"FINISHED"}
+
+
+class REVIEW_OT_restore(bpy.types.Operator):
+    bl_idname = "review.restore"
+    bl_label = "Restore"
+    bl_description = "Restore saved view"
+
+    view_idx: bpy.props.IntProperty()
+
+    def execute(self, context):
+        view = context.scene.review_saved[self.view_idx]
+        restore_view(get_data(view))
+        self.report({"INFO"}, f"Restored '{view.view_name}' view")
+        return {"FINISHED"}
+
+
+class REVIEW_OT_delete(bpy.types.Operator):
+    bl_idname = "review.delete"
+    bl_label = "Delete"
+    bl_description = (
+        "Delete saved view. If multiple views are selected, they will also be deleted"
+    )
+
+    def execute(self, context):
+        saved_views = context.scene.review_saved
+        selected = get_selected()
+        length = len(selected)
+        if length > 0:
+            # some names have an empty value if view.name is in the second for loop
+            # so the names are set right before
+            names = [view.name for view in selected]
+            for view_idx in range(length):
+                saved_views.remove(saved_views.find(names[view_idx]))
+            s = "s" if length > 1 else ""
+            self.report({"INFO"}, f"View{s} deleted")
+        else:
+            self.report({"ERROR"}, f"No view selected")
         return {"FINISHED"}
 
 
@@ -218,11 +260,38 @@ class REVIEW_PT_main(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         box = layout.box()
-        draw_toggle(box)
         row = box.row()
         row.alignment = "CENTER"
-        draw_ops(row)
-        draw_idx(box)
+        row.label(text="Keymap", icon="EVENT_OS")
+        row = box.row()
+        maps = context.window_manager.keyconfigs.user.keymaps["3D View"].keymap_items
+        row.prop(maps["wm.call_menu_pie"], "active", text="")
+        row.prop(maps["wm.call_menu_pie"], "type", text="", full_event=True)
+
+
+class REVIEW_PT_saved_views(bpy.types.Panel):
+    bl_label = "Saved Views"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_parent_id = "REVIEW_PT_main"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        saved_views = bpy.context.scene.review_saved
+        for view_idx, view in enumerate(saved_views):
+            row = box.row()
+            row.prop(view, "is_selected", text="")
+            split = row.split(factor=0.6)
+            split.prop(view, "view_name", text="")
+            split.operator(
+                "review.restore", icon="RECOVER_LAST", text=""
+            ).view_idx = view_idx
+        row = box.row()
+        row.operator("review.save", icon="FILE_TICK")
+        if saved_views:
+            row.operator("review.delete", icon="TRASH")
 
 
 class REVIEW_PT_settings(bpy.types.Panel):
@@ -240,9 +309,15 @@ class REVIEW_PT_settings(bpy.types.Panel):
         row.label(text="Update Delay")
         row.prop(prefs, "update_delay", slider=True)
         row = box.row()
-        row.label(text="Saved Views")
+        row.label(text="Max Views")
         row.prop(prefs, "save_count", slider=True)
-        box.operator("review.clear", icon="FILE_REFRESH")
+        box.separator(factor=0)
+        row = box.row()
+        row.alignment = "CENTER"
+        row.label(text="Clear Views", icon="FILE_REFRESH")
+        row = box.row()
+        row.operator("review.clear", text="Recent").mode = "RECENT"
+        row.operator("review.clear", text="Saved").mode = "SAVED"
 
 
 class REVIEW_MT_review_pie(bpy.types.Menu):
@@ -250,14 +325,29 @@ class REVIEW_MT_review_pie(bpy.types.Menu):
 
     def draw(self, context):
         pie = self.layout.menu_pie()
-        draw_ops(pie)
+        pie.operator(
+            "review.switch", text="Previous", icon="TRIA_LEFT"
+        ).mode = "PREVIOUS"
+        pie.operator("review.switch", text="Next", icon="TRIA_RIGHT").mode = "NEXT"
+        pie.operator("review.switch", text="Recent", icon="TIME").mode = "RECENT"
         box = pie.box()
-        draw_toggle(box)
-        draw_idx(box)
+        row = box.row()
+        row.scale_y = 2
+        if _is_active:
+            row.operator("review.toggle", text="Active", icon="OUTLINER_OB_CAMERA")
+        else:
+            row.operator("review.toggle", text="Inactive", icon="CAMERA_DATA")
+        row = box.row()
+        row.alignment = "CENTER"
+        view_idx = context.scene.review_props.view_idx
+        view_count = len(context.scene.review_recent)
+        if view_count > 0:
+            row.label(text=f"{view_idx + 1}/{view_count}")
+        else:
+            row.label(text="0/0")
 
 
 class REVIEW_PG_properties(bpy.types.PropertyGroup):
-    is_active: bpy.props.BoolProperty()
     view_idx: bpy.props.IntProperty()
 
 
@@ -266,39 +356,35 @@ class REVIEW_PG_view(bpy.types.PropertyGroup):
     view_location: bpy.props.FloatVectorProperty(subtype="XYZ")
     view_distance: bpy.props.FloatProperty()
     count: bpy.props.IntProperty()
+    view_name: bpy.props.StringProperty(
+        name="Name",
+        description="View name. Used for organizational purposes only",
+        default="Untitled",
+    )
+    is_selected: bpy.props.BoolProperty(
+        name="Select",
+        description=(
+            "Select this view. Once selected, this view can be resaved or deleted"
+        ),
+    )
 
 
 class REVIEW_AP_preferences(bpy.types.AddonPreferences):
     bl_idname = __name__
-
     update_delay: bpy.props.IntProperty(
         name="",
         description="The delay time in seconds between view checks",
-        default=2,
+        default=1,
         min=1,
         max=30,
     )
     save_count: bpy.props.IntProperty(
         name="",
-        description="The maximum amount of saved views",
+        description="The maximum amount of recent views",
         default=10,
         min=1,
-        max=20,
+        max=50,
     )
-
-    def draw(self, context):
-        layout = self.layout
-        box = layout.box()
-        row = box.row()
-        row.alignment = "CENTER"
-        row.label(text="Keymap", icon="EVENT_OS")
-        user_keymaps = context.window_manager.keyconfigs.user.keymaps["3D View"]
-        keymap_items = user_keymaps.keymap_items
-        layout.context_pointer_set("keymap", user_keymaps)
-        row = box.row()
-        keymap_item = keymap_items["wm.call_menu_pie"]
-        row.prop(keymap_item, "active", text="", full_event=True)
-        row.prop(keymap_item, "type", text=keymap_item.name, full_event=True)
 
 
 keymaps = []
@@ -306,7 +392,11 @@ classes = (
     REVIEW_OT_toggle,
     REVIEW_OT_switch,
     REVIEW_OT_clear,
+    REVIEW_OT_save,
+    REVIEW_OT_restore,
+    REVIEW_OT_delete,
     REVIEW_PT_main,
+    REVIEW_PT_saved_views,
     REVIEW_PT_settings,
     REVIEW_MT_review_pie,
     REVIEW_PG_properties,
@@ -319,8 +409,9 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.review_props = bpy.props.PointerProperty(type=REVIEW_PG_properties)
-    bpy.types.Scene.review_views = bpy.props.CollectionProperty(type=REVIEW_PG_view)
+    bpy.types.Scene.review_recent = bpy.props.CollectionProperty(type=REVIEW_PG_view)
     bpy.types.Scene.review_last = bpy.props.CollectionProperty(type=REVIEW_PG_view)
+    bpy.types.Scene.review_saved = bpy.props.CollectionProperty(type=REVIEW_PG_view)
     key_config = bpy.context.window_manager.keyconfigs.addon
     if key_config:
         keymap = key_config.keymaps.new("3D View", space_type="VIEW_3D")
@@ -332,11 +423,14 @@ def register():
 
 
 def unregister():
+    if bpy.app.timers.is_registered(store_view):
+        bpy.app.timers.unregister(store_view)
     for keymap, keymap_item in keymaps:
         keymap.keymap_items.remove(keymap_item)
     keymaps.clear()
+    del bpy.types.Scene.review_saved
     del bpy.types.Scene.review_last
-    del bpy.types.Scene.review_views
+    del bpy.types.Scene.review_recent
     del bpy.types.Scene.review_props
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
