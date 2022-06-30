@@ -26,11 +26,11 @@
 
 ## Installation
 
-- Download the `ZIP` file (don't extract it)
-  - Either go to [Releases](https://github.com/DanielBoxer/ReView/releases/latest) and download the `ZIP` file for the latest stable version
-  - Or press the `Code` button at the top of the page and then `Download ZIP` for the newest experimental version
+- Download ReView
+  - Either go to [Releases](https://github.com/DanielBoxer/ReView/releases/latest) and download the `ReView.py` file for the latest stable version
+  - Or press the `Code` button at the top of the page and then `Download ZIP` for the newest experimental version (don't extract it)
 - In Blender, open `Preferences` and go to `Add-ons`
 - Click `Install`
-- Select the `ZIP` file in the file browser
+- Select the download in the file browser
 - Click `Install Add-on`
 - Enable the add-on by checking the box
